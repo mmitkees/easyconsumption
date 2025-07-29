@@ -81,7 +81,7 @@ win_image = choose_from_list(images, 'display_name', "Select Windows Image")
 win_image_id = win_image.id
 print(f"Selected Windows Image: {win_image.display_name} (OCID: {win_image_id})")
 
-# === 5. Create a new compartment named 'tempcomp' under the chosen compartment ===
+# === 5. Check for an existing compartment named 'tempcomp' under the chosen compartment ===
 COMPARTMENT_NAME = 'tempcomp'
 COMPARTMENT_DESC = 'Temporary compartment created via script'
 INSTANCE_PREFIX = 'auto-win-instance'
@@ -91,25 +91,51 @@ OCPUS = 54
 MEMORY_GBS = 512
 BOOT_VOL_GBS = 50
 
-print(f"\nStep 5: Creating compartment '{COMPARTMENT_NAME}' under chosen compartment...")
-compartment = identity.create_compartment(
-    oci.identity.models.CreateCompartmentDetails(
-        compartment_id=parent_compartment_ocid,
-        name=COMPARTMENT_NAME,
-        description=COMPARTMENT_DESC
-    )
+print(f"\nStep 5: Checking if compartment '{COMPARTMENT_NAME}' exists under chosen compartment...")
+existing_compartments = identity.list_compartments(
+    parent_compartment_ocid,
+    compartment_id_in_subtree=False,
+    access_level="ANY"
 ).data
-compartment_id = compartment.id
-print(f"Compartment '{COMPARTMENT_NAME}' created with OCID: {compartment_id}")
 
-# Wait until the compartment becomes ACTIVE
-print("Waiting for compartment to become ACTIVE...")
-for i in range(30):
-    comp = identity.get_compartment(compartment_id).data
-    if comp.lifecycle_state == 'ACTIVE':
-        print("Compartment is ACTIVE.")
-        break
-    time.sleep(2)
+compartment = next((c for c in existing_compartments if c.name == COMPARTMENT_NAME and c.lifecycle_state != "DELETED"), None)
+
+if compartment:
+    compartment_id = compartment.id
+    print(f"Compartment '{COMPARTMENT_NAME}' already exists with OCID: {compartment_id}")
+else:
+    print(f"Compartment '{COMPARTMENT_NAME}' does not exist. Creating now...")
+    compartment = identity.create_compartment(
+        oci.identity.models.CreateCompartmentDetails(
+            compartment_id=parent_compartment_ocid,
+            name=COMPARTMENT_NAME,
+            description=COMPARTMENT_DESC
+        )
+    ).data
+    compartment_id = compartment.id
+    print(f"Compartment '{COMPARTMENT_NAME}' created with OCID: {compartment_id}")
+
+# Wait until the compartment becomes ACTIVE, printing status each time
+import oci.exceptions
+
+print("Waiting for compartment to become ACTIVE (this may take up to 2 minutes)...")
+max_attempts = 30
+for i in range(max_attempts):
+    try:
+        comp = identity.get_compartment(compartment_id).data
+        print(f"Attempt {i+1}: Compartment lifecycle state is '{comp.lifecycle_state}'.")
+        if comp.lifecycle_state == 'ACTIVE':
+            print("Compartment is ACTIVE.")
+            break
+        else:
+            print("Still waiting for compartment to become ACTIVE...")
+    except oci.exceptions.ServiceError as e:
+        if e.status == 404:
+            print(f"Attempt {i+1}: Compartment not found yet; retrying...")
+        else:
+            print("Service error:", e)
+            raise
+    time.sleep(4)
 else:
     print("Compartment did not become ACTIVE in time. Exiting.")
     exit(1)
